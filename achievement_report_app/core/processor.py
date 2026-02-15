@@ -65,7 +65,6 @@ class AchievementProcessor:
 
         all_students = []
         warnings = []  # 收集警告信息
-        multi_col_sheets = 0  # 统计多列并排的工作表数量
         # 如果只有一个工作表，即使是Sheet1也要处理
         sheets_to_process = xl.sheet_names if len(xl.sheet_names) == 1 else [s for s in xl.sheet_names if s != 'Sheet1']
         total_sheets = len(sheets_to_process)
@@ -75,8 +74,12 @@ class AchievementProcessor:
         def is_valid_student_id(sid: str) -> bool:
             """判断是否为有效学号
             放宽条件：长度>=5，且数字占比>=80%（允许少量字母）
+            排除包含小数点的值（避免误识别统计数据如0.0282）
             """
             if not sid or len(sid) < 5:
+                return False
+            # 排除小数
+            if '.' in sid:
                 return False
             digit_count = sum(1 for c in sid if c.isdigit())
             return digit_count / len(sid) >= 0.8
@@ -193,39 +196,53 @@ class AchievementProcessor:
 
                     # 找到所有"学号"列的位置
                     student_id_cols = [j for j, v in enumerate(row_values) if '学号' in v]
+                    # 找到所有"班级"列的位置，用于确定每组的边界
+                    class_cols = [j for j, v in enumerate(row_values) if v.replace('\n', '').replace('\r', '') in ['班级', '行政班']]
 
-                    for sid_col in student_id_cols:
+                    for idx, sid_col in enumerate(student_id_cols):
                         col_mapping = {'student_id': sid_col}
 
-                        # 在学号列之后查找其他列（直到下一个学号列或行尾）
-                        next_sid_col = len(row_values)
-                        for next_col in student_id_cols:
-                            if next_col > sid_col:
-                                next_sid_col = next_col
+                        # 确定当前组的搜索范围
+                        # 前边界：当前组对应的班级列，或上一组的后边界
+                        # 查找学号列之前最近的班级列
+                        group_start = 0
+                        for cc in class_cols:
+                            if cc < sid_col:
+                                group_start = cc
+                            else:
                                 break
 
-                        # 在 [sid_col, next_sid_col) 范围内查找其他列
-                        for j in range(sid_col, next_sid_col):
-                            cell_value = row_values[j].strip()
+                        # 后边界：下一个班级列，或行尾
+                        group_end = len(row_values)
+                        for cc in class_cols:
+                            if cc > sid_col:
+                                group_end = cc
+                                break
 
-                            if '姓名' in cell_value and 'name' not in col_mapping:
+                        # 在 [group_start, group_end) 范围内查找所有列
+                        for j in range(group_start, group_end):
+                            cell_value = row_values[j].strip()
+                            # 清理换行符，处理如"总评\n成绩"这类列名
+                            cell_value_clean = cell_value.replace('\n', '').replace('\r', '')
+
+                            if '姓名' in cell_value_clean and 'name' not in col_mapping:
                                 col_mapping['name'] = j
 
-                            if any(p in cell_value for p in key_patterns['final_score']) and 'final_score' not in col_mapping:
+                            if any(p in cell_value_clean for p in key_patterns['final_score']) and 'final_score' not in col_mapping:
                                 col_mapping['final_score'] = j
 
-                            if any(p in cell_value for p in key_patterns['regular_score']) and 'regular_score' not in col_mapping:
+                            if any(p in cell_value_clean for p in key_patterns['regular_score']) and 'regular_score' not in col_mapping:
                                 col_mapping['regular_score'] = j
 
                             if 'total_score' not in col_mapping:
                                 # 优先精确匹配，避免"成绩"匹配到"平时成绩"等
-                                if any(p in cell_value for p in ['总成绩', '总评成绩', '总分']):
+                                if any(p in cell_value_clean for p in ['总成绩', '总评成绩', '总分']):
                                     col_mapping['total_score'] = j
-                                elif cell_value in ['成绩', '总评']:
+                                elif cell_value_clean in ['成绩', '总评']:
                                     col_mapping['total_score'] = j
 
                             # 为每组数据查找对应的班级列
-                            if cell_value in ['班级', '行政班'] and 'class_col' not in col_mapping:
+                            if cell_value_clean in ['班级', '行政班'] and 'class_col' not in col_mapping:
                                 col_mapping['class_col'] = j
 
                         # 检查这组是否有完整的必需列
@@ -254,10 +271,6 @@ class AchievementProcessor:
                 if not has_missing_warning:
                     warnings.append(f"工作表「{sheet}」: 未找到完整的成绩列组合，已跳过")
                 continue
-
-            # 如果有多组，统计数量（不再作为警告）
-            if len(col_groups) > 1:
-                multi_col_sheets += 1
 
             # ===== 3. 提取学生数据（支持多组） =====
             data_start_row = header_row + 1
@@ -347,10 +360,6 @@ class AchievementProcessor:
             processed_sheets += 1
             progress = 5 + int(25 * processed_sheets / max(total_sheets, 1))
             self._report_progress(f"正在处理工作表 {sheet}...", progress)
-
-        # 添加多列统计汇总信息（仅当有多列工作表时）
-        if multi_col_sheets > 0:
-            warnings.insert(0, f"📊 检测到 {multi_col_sheets} 个工作表包含多组并排学生数据，已全部正确处理")
 
         return all_students, warnings
 
