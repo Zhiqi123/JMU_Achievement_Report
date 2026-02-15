@@ -65,6 +65,12 @@ class AchievementReportApp(ctk.CTk):
         ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("blue")
 
+        # macOS 打包后确保窗口正确显示
+        self.lift()
+        self.attributes('-topmost', True)
+        self.after(100, lambda: self.attributes('-topmost', False))
+        self.focus_force()
+
     def _build_ui(self):
         """构建UI界面"""
         # 主容器（可滚动）
@@ -299,7 +305,7 @@ class AchievementReportApp(ctk.CTk):
         # === 版权信息 ===
         ctk.CTkLabel(
             self.main_frame,
-            text="© 2025 集美大学 达成度报告生成器 v1.2 | 刘祉祁",
+            text="© 2026 集美大学 达成度报告生成器 v1.3 | 刘祉祁",
             font=ctk.CTkFont(size=11),
             text_color="#555555"
         ).pack(pady=(20, 5))
@@ -628,6 +634,9 @@ class AchievementReportApp(ctk.CTk):
         if getattr(sys, 'frozen', False):
             # 打包后的可执行文件
             app_dir = os.path.dirname(sys.executable)
+            # macOS .app 包需要特殊处理：从 .app/Contents/MacOS 跳到 .app 所在目录
+            if sys.platform == 'darwin' and '.app' in app_dir:
+                app_dir = os.path.dirname(os.path.dirname(os.path.dirname(app_dir)))
         else:
             # 开发模式运行
             app_dir = os.path.dirname(os.path.abspath(__file__))
