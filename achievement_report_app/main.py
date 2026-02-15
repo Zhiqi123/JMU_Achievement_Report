@@ -26,6 +26,11 @@ class AchievementReportApp(ctk.CTk):
         # 文件选择
         self.selected_files: list[str] = []
         self.output_dir: str = ""
+        self.last_output_files: list[str] = []  # 最后生成的文件列表
+
+        # 文件覆盖处理（用于线程同步）
+        self._overwrite_event = threading.Event()
+        self._overwrite_result: str = ""  # "overwrite", "rename", "skip"
 
         self._setup_window()
         self._build_ui()
@@ -70,6 +75,18 @@ class AchievementReportApp(ctk.CTk):
         title_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         title_frame.pack(fill="x", pady=(0, 20))
 
+        # 右上角说明书按钮（先放，浮动在右侧）
+        ctk.CTkButton(
+            title_frame,
+            text="📖 说明书",
+            command=self._open_manual,
+            width=80,
+            height=28,
+            font=ctk.CTkFont(size=12),
+            fg_color="#607D8B",
+            hover_color="#455A64"
+        ).place(relx=1.0, x=-5, y=5, anchor="ne")
+
         ctk.CTkLabel(
             title_frame,
             text="达成度报告生成器",
@@ -81,7 +98,7 @@ class AchievementReportApp(ctk.CTk):
             title_frame,
             text="从成绩单Excel生成达成度分析报告",
             font=ctk.CTkFont(size=14),
-            text_color="gray"
+            text_color="#555555"
         ).pack()
 
         # === 文件选择区域 ===
@@ -120,7 +137,7 @@ class AchievementReportApp(ctk.CTk):
         self.file_count_label = ctk.CTkLabel(
             btn_frame,
             text="未选择文件",
-            text_color="gray"
+            text_color="#555555"
         )
         self.file_count_label.pack(side="left")
 
@@ -128,7 +145,7 @@ class AchievementReportApp(ctk.CTk):
         self.file_listbox = tk.Listbox(
             file_frame,
             height=5,
-            font=("SF Pro", 12),
+            font=("Microsoft YaHei", 14),  # Windows使用微软雅黑，字号加大
             selectmode=tk.SINGLE,
             bg="#F5F5F5",
             fg="#333333",  # 深色文字
@@ -163,10 +180,20 @@ class AchievementReportApp(ctk.CTk):
             width=100
         ).pack(side="left", padx=(0, 10))
 
+        ctk.CTkButton(
+            output_btn_frame,
+            text="清空",
+            command=self._clear_output_dir,
+            width=60,
+            fg_color="transparent",
+            border_width=1,
+            text_color=("gray10", "gray90")
+        ).pack(side="left", padx=(0, 10))
+
         self.output_dir_label = ctk.CTkLabel(
             output_btn_frame,
             text="未选择（将使用源文件所在目录）",
-            text_color="gray"
+            text_color="#555555"
         )
         self.output_dir_label.pack(side="left")
 
@@ -182,6 +209,18 @@ class AchievementReportApp(ctk.CTk):
             text="⚙️ 配置参数",
             font=ctk.CTkFont(size=16, weight="bold")
         ).pack(side="left")
+
+        ctk.CTkButton(
+            config_header,
+            text="恢复默认",
+            command=self._reset_config,
+            width=80,
+            height=26,
+            font=ctk.CTkFont(size=12),
+            fg_color="transparent",
+            border_width=1,
+            text_color=("gray10", "gray90")
+        ).pack(side="right")
 
         # 第一行参数
         row1 = ctk.CTkFrame(config_frame, fg_color="transparent")
@@ -202,19 +241,35 @@ class AchievementReportApp(ctk.CTk):
         self.config_status_label = ctk.CTkLabel(
             config_frame,
             text="",
-            text_color="gray"
+            text_color="#555555"
         )
         self.config_status_label.pack(padx=15, pady=(5, 15))
 
-        # === 生成按钮 ===
+        # === 按钮区域 ===
+        btn_action_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        btn_action_frame.pack(pady=20)
+
         self.generate_btn = ctk.CTkButton(
-            self.main_frame,
+            btn_action_frame,
             text="▶ 生成报告",
             command=self._on_generate,
             height=45,
+            width=150,
             font=ctk.CTkFont(size=16, weight="bold")
         )
-        self.generate_btn.pack(pady=20)
+        self.generate_btn.pack(side="left", padx=(0, 15))
+
+        self.open_dir_btn = ctk.CTkButton(
+            btn_action_frame,
+            text="📂 打开输出目录",
+            command=self._open_output_dir,
+            height=45,
+            width=150,
+            fg_color="#4CAF50",
+            hover_color="#388E3C",
+            font=ctk.CTkFont(size=14)
+        )
+        self.open_dir_btn.pack(side="left")
 
         # === 进度区域 ===
         progress_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
@@ -228,7 +283,7 @@ class AchievementReportApp(ctk.CTk):
         self.progress_label = ctk.CTkLabel(
             progress_frame,
             text="",
-            text_color="gray"
+            text_color="#555555"
         )
         self.progress_label.pack(pady=5)
 
@@ -244,9 +299,9 @@ class AchievementReportApp(ctk.CTk):
         # === 版权信息 ===
         ctk.CTkLabel(
             self.main_frame,
-            text="© 2025 集美大学 达成度报告生成器 v1.0 | 刘祉祁",
+            text="© 2025 集美大学 达成度报告生成器 v1.2 | 刘祉祁",
             font=ctk.CTkFont(size=11),
-            text_color="gray"
+            text_color="#555555"
         ).pack(pady=(20, 5))
 
     def _create_param_field(self, parent, label: str, default: str) -> ctk.CTkEntry:
@@ -300,6 +355,35 @@ class AchievementReportApp(ctk.CTk):
         if directory:
             self.output_dir = directory
             self.output_dir_label.configure(text=f"输出到: {directory}")
+
+    def _clear_output_dir(self):
+        """清空输出目录选择"""
+        self.output_dir = ""
+        self.output_dir_label.configure(text="未选择（将使用源文件所在目录）")
+
+    def _reset_config(self):
+        """恢复默认配置"""
+        defaults = {
+            'ratio1': '50',
+            'ratio2': '30',
+            'ratio3': '20',
+            'regular': '30',
+            'final': '70',
+            'expectation': '0.6'
+        }
+        self.ratio1_entry.delete(0, tk.END)
+        self.ratio1_entry.insert(0, defaults['ratio1'])
+        self.ratio2_entry.delete(0, tk.END)
+        self.ratio2_entry.insert(0, defaults['ratio2'])
+        self.ratio3_entry.delete(0, tk.END)
+        self.ratio3_entry.insert(0, defaults['ratio3'])
+        self.regular_entry.delete(0, tk.END)
+        self.regular_entry.insert(0, defaults['regular'])
+        self.final_entry.delete(0, tk.END)
+        self.final_entry.insert(0, defaults['final'])
+        self.expectation_entry.delete(0, tk.END)
+        self.expectation_entry.insert(0, defaults['expectation'])
+        self._validate_config()
 
     def _update_file_list(self):
         """更新文件列表"""
@@ -381,12 +465,47 @@ class AchievementReportApp(ctk.CTk):
         thread = threading.Thread(target=self._process_files, daemon=True)
         thread.start()
 
+    def _get_unique_filename(self, filepath: str) -> str:
+        """获取唯一的文件名，如果文件存在则添加后缀 _1, _2, ..."""
+        if not os.path.exists(filepath):
+            return filepath
+
+        base, ext = os.path.splitext(filepath)
+        counter = 1
+        while True:
+            new_path = f"{base}_{counter}{ext}"
+            if not os.path.exists(new_path):
+                return new_path
+            counter += 1
+
+    def _show_overwrite_dialog(self, filepath: str):
+        """在主线程显示文件覆盖对话框"""
+        filename = os.path.basename(filepath)
+        result = messagebox.askyesnocancel(
+            "文件已存在",
+            f"文件 \"{filename}\" 已存在。\n\n"
+            f"点击「是」覆盖原文件\n"
+            f"点击「否」自动重命名（添加后缀）\n"
+            f"点击「取消」跳过此文件"
+        )
+
+        if result is True:
+            self._overwrite_result = "overwrite"
+        elif result is False:
+            self._overwrite_result = "rename"
+        else:
+            self._overwrite_result = "skip"
+
+        self._overwrite_event.set()
+
     def _process_files(self):
         """后台处理文件"""
         success_count = 0
         fail_count = 0
+        skip_count = 0
         results = []
         all_warnings = []
+        output_files = []  # 记录成功生成的文件
 
         total_files = len(self.selected_files)
 
@@ -403,6 +522,22 @@ class AchievementReportApp(ctk.CTk):
 
                 output_file = os.path.join(output_dir, f"{name_without_ext}_达成度报告.xlsx")
 
+                # 检查文件是否存在
+                if os.path.exists(output_file):
+                    # 重置事件
+                    self._overwrite_event.clear()
+                    # 在主线程显示对话框
+                    self.after(0, self._show_overwrite_dialog, output_file)
+                    # 等待用户选择
+                    self._overwrite_event.wait()
+
+                    if self._overwrite_result == "skip":
+                        skip_count += 1
+                        results.append(f"⏭ {filename}: 已跳过（文件已存在）")
+                        continue
+                    elif self._overwrite_result == "rename":
+                        output_file = self._get_unique_filename(output_file)
+
                 # 设置进度回调
                 def progress_callback(msg, percent, idx=idx, filename=filename):
                     file_progress = (idx + percent / 100) / total_files
@@ -415,29 +550,121 @@ class AchievementReportApp(ctk.CTk):
                 result = self.processor.process_file(input_file, output_file)
 
                 success_count += 1
+                output_files.append(output_file)  # 记录成功的输出文件
                 # 显示学生数量和警告数量
                 warn_count = len(result.get('warnings', []))
+                output_basename = os.path.basename(output_file)
                 if warn_count > 0:
-                    results.append(f"✓ {filename}: {result['total_students']}名学生 (⚠️ {warn_count}个警告)")
+                    results.append(f"✓ {output_basename}: {result['total_students']}名学生 (⚠️ {warn_count}个警告)")
                     all_warnings.extend([f"[{filename}] {w}" for w in result['warnings']])
                 else:
-                    results.append(f"✓ {filename}: {result['total_students']}名学生")
+                    results.append(f"✓ {output_basename}: {result['total_students']}名学生")
 
             except Exception as e:
                 fail_count += 1
                 error_msg = str(e).replace('\n', ' | ')  # 简化多行错误
                 results.append(f"✗ {filename}: {error_msg}")
 
-        # 完成 - 在主线程更新UI
-        self.after(0, self._on_process_complete, success_count, fail_count, results, all_warnings)
+        # 保存输出文件列表
+        self.last_output_files = output_files
 
-    def _on_process_complete(self, success_count: int, fail_count: int, results: list, warnings: list):
+        # 完成 - 在主线程更新UI
+        self.after(0, self._on_process_complete, success_count, fail_count, results, all_warnings, skip_count)
+
+    def _open_output_dir(self):
+        """打开输出目录，如果有刚生成的文件则选中"""
+        import subprocess
+        import sys
+
+        # 确定要打开的目录
+        if self.last_output_files:
+            # 有刚生成的文件，选中第一个
+            file_to_select = self.last_output_files[0]
+            target_dir = os.path.dirname(file_to_select)
+        elif self.output_dir:
+            # 使用选择的输出目录
+            target_dir = self.output_dir
+            file_to_select = None
+        elif self.selected_files:
+            # 使用第一个输入文件的目录
+            target_dir = os.path.dirname(self.selected_files[0])
+            file_to_select = None
+        else:
+            messagebox.showinfo("提示", "请先选择文件或输出目录")
+            return
+
+        # 检查目录是否存在
+        if not os.path.exists(target_dir):
+            messagebox.showerror("错误", f"目录不存在：\n{target_dir}")
+            return
+
+        try:
+            if sys.platform == 'win32':
+                # Windows
+                if file_to_select and os.path.exists(file_to_select):
+                    # 打开目录并选中文件
+                    subprocess.run(['explorer', '/select,', file_to_select], check=False)
+                else:
+                    # 只打开目录
+                    subprocess.run(['explorer', target_dir], check=False)
+            elif sys.platform == 'darwin':
+                # macOS
+                if file_to_select and os.path.exists(file_to_select):
+                    subprocess.run(['open', '-R', file_to_select], check=False)
+                else:
+                    subprocess.run(['open', target_dir], check=False)
+            else:
+                # Linux
+                subprocess.run(['xdg-open', target_dir], check=False)
+        except Exception as e:
+            messagebox.showerror("错误", f"无法打开目录：\n{str(e)}")
+
+    def _open_manual(self):
+        """打开说明书文件"""
+        import subprocess
+        import sys
+
+        # 获取应用程序所在目录
+        if getattr(sys, 'frozen', False):
+            # 打包后的可执行文件
+            app_dir = os.path.dirname(sys.executable)
+        else:
+            # 开发模式运行
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+
+        manual_path = os.path.join(app_dir, '说明书.txt')
+
+        if not os.path.exists(manual_path):
+            messagebox.showwarning(
+                "找不到说明书",
+                "找不到 说明书.txt，请确认该文件位于与应用程序相同目录中。"
+            )
+            return
+
+        try:
+            if sys.platform == 'win32':
+                os.startfile(manual_path)
+            elif sys.platform == 'darwin':
+                subprocess.run(['open', manual_path], check=False)
+            else:
+                subprocess.run(['xdg-open', manual_path], check=False)
+        except Exception as e:
+            messagebox.showerror("错误", f"无法打开说明书：\n{str(e)}")
+
+    def _on_process_complete(self, success_count: int, fail_count: int, results: list, warnings: list, skip_count: int = 0):
         """处理完成回调"""
         self.progress_bar.set(1)
         self.progress_label.configure(text="")
         self.generate_btn.configure(state="normal", text="▶ 生成报告")
 
-        result_summary = f"处理完成！成功: {success_count}, 失败: {fail_count}\n\n"
+        # 延迟隐藏进度条（让用户看到完成状态）
+        self.after(1500, lambda: self.progress_bar.pack_forget())
+
+        # 构建结果摘要
+        summary_parts = [f"成功: {success_count}", f"失败: {fail_count}"]
+        if skip_count > 0:
+            summary_parts.append(f"跳过: {skip_count}")
+        result_summary = f"处理完成！{', '.join(summary_parts)}\n\n"
         result_summary += "\n".join(results)
 
         # 如果有警告，显示警告信息
@@ -449,11 +676,17 @@ class AchievementReportApp(ctk.CTk):
             if len(warnings) > 5:
                 result_summary += f"  ... 还有 {len(warnings) - 5} 条警告"
 
-        color = "green" if fail_count == 0 and len(warnings) == 0 else ("orange" if fail_count == 0 else "red")
+        color = "green" if fail_count == 0 and len(warnings) == 0 else ("#CC7000" if fail_count == 0 else "red")
         self.result_label.configure(text=result_summary, text_color=color)
 
-        if fail_count == 0:
-            messagebox.showinfo("完成", f"成功处理 {success_count} 个文件！")
+        # 弹出完成提示
+        if fail_count == 0 and success_count > 0:
+            if skip_count > 0:
+                messagebox.showinfo("完成", f"成功处理 {success_count} 个文件，跳过 {skip_count} 个文件！")
+            else:
+                messagebox.showinfo("完成", f"成功处理 {success_count} 个文件！")
+        elif fail_count == 0 and success_count == 0 and skip_count > 0:
+            messagebox.showinfo("完成", f"所有 {skip_count} 个文件均已跳过")
 
 
 def main():

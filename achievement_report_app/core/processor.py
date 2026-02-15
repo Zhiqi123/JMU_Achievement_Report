@@ -65,36 +65,107 @@ class AchievementProcessor:
 
         all_students = []
         warnings = []  # 收集警告信息
-        total_sheets = len([s for s in xl.sheet_names if s != 'Sheet1'])
+        multi_col_sheets = 0  # 统计多列并排的工作表数量
+        # 如果只有一个工作表，即使是Sheet1也要处理
+        sheets_to_process = xl.sheet_names if len(xl.sheet_names) == 1 else [s for s in xl.sheet_names if s != 'Sheet1']
+        total_sheets = len(sheets_to_process)
         processed_sheets = 0
-        successful_sheets = 0
 
-        for sheet in xl.sheet_names:
-            if sheet == 'Sheet1':
-                continue
+        # 辅助函数（定义在循环外部，避免重复创建）
+        def is_valid_student_id(sid: str) -> bool:
+            """判断是否为有效学号
+            放宽条件：长度>=5，且数字占比>=80%（允许少量字母）
+            """
+            if not sid or len(sid) < 5:
+                return False
+            digit_count = sum(1 for c in sid if c.isdigit())
+            return digit_count / len(sid) >= 0.8
+
+        def is_empty(val) -> bool:
+            """判断值是否为空"""
+            if val is None:
+                return True
+            try:
+                if pd.isna(val):
+                    return True
+            except (ValueError, TypeError):
+                pass
+            return str(val).strip() == ''
+
+        for sheet in sheets_to_process:
 
             df = pd.read_excel(xl, sheet_name=sheet, header=None)
 
             # ===== 1. 动态查找行政班信息 =====
-            class_name = None
-            for i in range(min(10, len(df))):
+            # 支持多种位置和格式：
+            # - 顶部/底部: "行政班：XXX" / "班级：XXX" 格式
+            # - 列数据: 列头为"班级"/"行政班"，每行有各自的班级
+            # - 工作表名称: 如 "9007851-0001_音乐2212" 提取 "音乐2212"
+            class_name = None  # 统一班级名（从顶部/底部/工作表名称提取）
+
+            # 1.1 在整个表格中搜索 "行政班：XXX" 或 "班级：XXX" 格式
+            for i in range(len(df)):
                 for j in range(min(5, len(df.columns))):
-                    cell_value = str(df.iloc[i, j]) if pd.notna(df.iloc[i, j]) else ''
-                    if '行政班' in cell_value:
-                        match = re.search(r'行政班[：:]\s*([^\s(（]+)', cell_value)
-                        if match:
-                            class_name = match.group(1).strip()
+                    cell_value = str(df.iloc[i, j]).strip() if pd.notna(df.iloc[i, j]) else ''
+                    if not cell_value:
+                        continue
+
+                    # 匹配 "行政班：XXX" 或 "班级：XXX" 格式
+                    match = re.search(r'(?:行政班|班级)[：:\s]\s*([^\s(（]+)', cell_value)
+                    if match:
+                        class_name = match.group(1).strip()
                         break
                 if class_name:
                     break
 
+            # 1.2 如果未找到，尝试从工作表名称提取班级信息
+            # 例如 "9007851-0001_音乐2212" -> "音乐2212"
             if not class_name:
-                warnings.append(f"工作表「{sheet}」: 未找到行政班信息，已跳过")
-                continue
+                sheet_match = re.search(r'_([^\d_][^_]+)$', sheet)
+                if sheet_match:
+                    class_name = sheet_match.group(1).strip()
 
-            # ===== 2. 动态查找列头行 =====
+            # 1.3 如果仍未找到，尝试从文件名提取班级信息
+            # 例如 "2022级计算机1班成绩单.xlsx" -> "计算机1班"
+            # 或 "软件工程2301_成绩.xlsx" -> "软件工程2301"
+            if not class_name:
+                filename = os.path.basename(grades_file)
+                filename_no_ext = os.path.splitext(filename)[0]
+                # 尝试匹配常见班级格式（避免匹配日期如2023-2024）
+                file_patterns = [
+                    r'(\d{2,4}级[^\d_]+\d*班)',  # 如 "2022级计算机1班"
+                    r'([a-zA-Z\u4e00-\u9fa5]+\d{4})',  # 如 "软件工程2301"（中文或英文+4位数字）
+                    r'_([^\d_][^_]+)$',  # 如 "_计算机1班"
+                    r'^([^\d_]+\d+班)',  # 如 "计算机1班"
+                ]
+                for pattern in file_patterns:
+                    file_match = re.search(pattern, filename_no_ext)
+                    if file_match:
+                        class_name = file_match.group(1).strip()
+                        break
+
+            # 1.4 查找列头中的班级列（用于从每行数据提取）
+            # 注意：这里不再记录全局 class_col_idx，而是在后面为每组数据找班级列
+            header_class_cols = []  # 存储所有班级列的位置
+            for i in range(min(15, len(df))):
+                row_values = [str(df.iloc[i, j]).strip() if pd.notna(df.iloc[i, j]) else ''
+                              for j in range(len(df.columns))]
+                # 找到列头行
+                if any('学号' in v for v in row_values) and any('姓名' in v for v in row_values):
+                    for j, cell_value in enumerate(row_values):
+                        if cell_value in ['班级', '行政班']:
+                            header_class_cols.append(j)
+                    break
+
+            # 确定班级获取方式
+            use_class_column = len(header_class_cols) > 0 and not class_name
+            if not class_name and not header_class_cols:
+                warnings.append(f"工作表「{sheet}」: 未找到行政班/班级信息，班级列将留空")
+                class_name = ""  # 行政班信息可选，留空继续处理
+
+            # ===== 2. 动态查找列头行（支持多组并排格式） =====
             header_row = None
-            col_mapping = {}
+            col_groups = []  # 存储多组列映射，每组是一个 col_mapping
 
             key_patterns = {
                 'student_id': ['学号'],
@@ -111,26 +182,46 @@ class AchievementProcessor:
                 if any('学号' in v for v in row_values) and any('姓名' in v for v in row_values):
                     header_row = i
 
-                    for j, cell_value in enumerate(row_values):
-                        cell_value = cell_value.strip()
+                    # 找到所有"学号"列的位置
+                    student_id_cols = [j for j, v in enumerate(row_values) if '学号' in v]
 
-                        if '学号' in cell_value and 'student_id' not in col_mapping:
-                            col_mapping['student_id'] = j
+                    for sid_col in student_id_cols:
+                        col_mapping = {'student_id': sid_col}
 
-                        if '姓名' in cell_value and 'name' not in col_mapping:
-                            col_mapping['name'] = j
+                        # 在学号列之后查找其他列（直到下一个学号列或行尾）
+                        next_sid_col = len(row_values)
+                        for next_col in student_id_cols:
+                            if next_col > sid_col:
+                                next_sid_col = next_col
+                                break
 
-                        if any(p in cell_value for p in key_patterns['final_score']) and 'final_score' not in col_mapping:
-                            col_mapping['final_score'] = j
+                        # 在 [sid_col, next_sid_col) 范围内查找其他列
+                        for j in range(sid_col, next_sid_col):
+                            cell_value = row_values[j].strip()
 
-                        if any(p in cell_value for p in key_patterns['regular_score']) and 'regular_score' not in col_mapping:
-                            col_mapping['regular_score'] = j
+                            if '姓名' in cell_value and 'name' not in col_mapping:
+                                col_mapping['name'] = j
 
-                        if 'total_score' not in col_mapping:
-                            if '总成绩' in cell_value or '总评成绩' in cell_value:
-                                col_mapping['total_score'] = j
-                            elif cell_value == '成绩' or cell_value == '总评':
-                                col_mapping['total_score'] = j
+                            if any(p in cell_value for p in key_patterns['final_score']) and 'final_score' not in col_mapping:
+                                col_mapping['final_score'] = j
+
+                            if any(p in cell_value for p in key_patterns['regular_score']) and 'regular_score' not in col_mapping:
+                                col_mapping['regular_score'] = j
+
+                            if 'total_score' not in col_mapping:
+                                if '总成绩' in cell_value or '总评成绩' in cell_value:
+                                    col_mapping['total_score'] = j
+                                elif cell_value == '成绩' or cell_value == '总评':
+                                    col_mapping['total_score'] = j
+
+                            # 为每组数据查找对应的班级列
+                            if cell_value in ['班级', '行政班'] and 'class_col' not in col_mapping:
+                                col_mapping['class_col'] = j
+
+                        # 检查这组是否有完整的必需列
+                        required_cols = ['student_id', 'name', 'final_score', 'regular_score', 'total_score']
+                        if all(col in col_mapping for col in required_cols):
+                            col_groups.append(col_mapping)
 
                     break
 
@@ -138,103 +229,106 @@ class AchievementProcessor:
                 warnings.append(f"工作表「{sheet}」: 未找到包含'学号'和'姓名'的列头行，已跳过")
                 continue
 
-            required_cols = ['student_id', 'name', 'final_score', 'regular_score', 'total_score']
-            missing_cols = [col for col in required_cols if col not in col_mapping]
-            if missing_cols:
-                col_names = {
-                    'student_id': '学号',
-                    'name': '姓名',
-                    'final_score': '期末成绩',
-                    'regular_score': '平时成绩',
-                    'total_score': '总成绩'
-                }
-                missing_names = [col_names[c] for c in missing_cols]
-                warnings.append(f"工作表「{sheet}」: 缺少必需列 [{', '.join(missing_names)}]，已跳过")
+            if not col_groups:
+                warnings.append(f"工作表「{sheet}」: 未找到完整的成绩列组合，已跳过")
                 continue
 
-            # ===== 3. 提取学生数据 =====
+            # 如果有多组，统计数量（不再作为警告）
+            if len(col_groups) > 1:
+                multi_col_sheets += 1
+
+            # ===== 3. 提取学生数据（支持多组） =====
             data_start_row = header_row + 1
 
             for i in range(data_start_row, len(df)):
                 row = df.iloc[i]
 
-                student_id = str(row[col_mapping['student_id']]) if pd.notna(row[col_mapping['student_id']]) else ''
+                # 从每组中提取学生数据
+                for col_mapping in col_groups:
+                    student_id = str(row[col_mapping['student_id']]) if pd.notna(row[col_mapping['student_id']]) else ''
 
-                if student_id.isdigit() and len(student_id) > 8:
-                    name = row[col_mapping['name']]
+                    if is_valid_student_id(student_id):
+                        name = row[col_mapping['name']]
 
-                    final_raw = row[col_mapping['final_score']]
-                    regular_raw = row[col_mapping['regular_score']]
-                    total_raw = row[col_mapping['total_score']]
+                        # 获取班级信息：
+                        # 1. 优先从当前组的班级列获取
+                        # 2. 其次使用统一班级名（从顶部/工作表名称提取）
+                        if 'class_col' in col_mapping:
+                            student_class = str(row[col_mapping['class_col']]).strip() if pd.notna(row[col_mapping['class_col']]) else ""
+                        elif use_class_column and header_class_cols:
+                            # 如果没有组内班级列，尝试使用最近的全局班级列
+                            # 找到距离当前学号列最近的班级列
+                            sid_col = col_mapping['student_id']
+                            closest_class_col = min(header_class_cols, key=lambda x: abs(x - sid_col))
+                            student_class = str(row[closest_class_col]).strip() if pd.notna(row[closest_class_col]) else ""
+                        else:
+                            student_class = class_name if class_name else ""
 
-                    special_status = None
-                    special_keywords = ['缺考', '缓考', '作弊', '取消', '免修', '旷考']
+                        final_raw = row[col_mapping['final_score']]
+                        regular_raw = row[col_mapping['regular_score']]
+                        total_raw = row[col_mapping['total_score']]
 
-                    for raw_val in [final_raw, regular_raw, total_raw]:
-                        if pd.notna(raw_val):
-                            raw_str = str(raw_val).strip()
-                            for keyword in special_keywords:
-                                if keyword in raw_str:
-                                    special_status = raw_str
-                                    break
+                        special_status = None
+                        special_keywords = ['缺考', '缓考', '作弊', '取消', '免修', '旷考']
+
+                        for raw_val in [final_raw, regular_raw, total_raw]:
+                            if pd.notna(raw_val):
+                                raw_str = str(raw_val).strip()
+                                for keyword in special_keywords:
+                                    if keyword in raw_str:
+                                        special_status = raw_str
+                                        break
+                            if special_status:
+                                break
+
+                        all_empty = is_empty(final_raw) and is_empty(regular_raw) and is_empty(total_raw)
+
+                        if all_empty:
+                            special_status = '成绩为空'
+
                         if special_status:
-                            break
-
-                    def is_empty(val):
-                        if val is None:
-                            return True
-                        try:
-                            if pd.isna(val):
-                                return True
-                        except (ValueError, TypeError):
-                            pass
-                        return str(val).strip() == ''
-
-                    all_empty = is_empty(final_raw) and is_empty(regular_raw) and is_empty(total_raw)
-
-                    if all_empty:
-                        special_status = '成绩为空'
-
-                    if special_status:
-                        all_students.append({
-                            'class': class_name,
-                            'student_id': student_id,
-                            'name': name,
-                            'final_score': None,
-                            'regular_score': None,
-                            'total_score': None,
-                            'status': special_status
-                        })
-                    else:
-                        try:
-                            final_score = float(final_raw)
-                            regular_score = float(regular_raw)
-                            total_score = float(total_raw)
-
                             all_students.append({
-                                'class': class_name,
-                                'student_id': student_id,
-                                'name': name,
-                                'final_score': final_score,
-                                'regular_score': regular_score,
-                                'total_score': total_score,
-                                'status': None
-                            })
-                        except (ValueError, TypeError):
-                            all_students.append({
-                                'class': class_name,
+                                'class': student_class,
                                 'student_id': student_id,
                                 'name': name,
                                 'final_score': None,
                                 'regular_score': None,
                                 'total_score': None,
-                                'status': '成绩异常'
+                                'status': special_status
                             })
+                        else:
+                            try:
+                                final_score = float(final_raw)
+                                regular_score = float(regular_raw)
+                                total_score = float(total_raw)
+
+                                all_students.append({
+                                    'class': student_class,
+                                    'student_id': student_id,
+                                    'name': name,
+                                    'final_score': final_score,
+                                    'regular_score': regular_score,
+                                    'total_score': total_score,
+                                    'status': None
+                                })
+                            except (ValueError, TypeError):
+                                all_students.append({
+                                    'class': student_class,
+                                    'student_id': student_id,
+                                    'name': name,
+                                    'final_score': None,
+                                    'regular_score': None,
+                                    'total_score': None,
+                                    'status': '成绩异常'
+                                })
 
             processed_sheets += 1
-            successful_sheets += 1
             progress = 5 + int(25 * processed_sheets / max(total_sheets, 1))
             self._report_progress(f"正在处理工作表 {sheet}...", progress)
+
+        # 添加多列统计汇总信息（仅当有多列工作表时）
+        if multi_col_sheets > 0:
+            warnings.insert(0, f"📊 检测到 {multi_col_sheets} 个工作表包含多组并排学生数据，已全部正确处理")
 
         return all_students, warnings
 
@@ -774,6 +868,10 @@ class AchievementProcessor:
 
     def _create_charts(self, ws_calc, ws_stat, data_start_row, data_end_row):
         """创建所有图表"""
+        # 根据学生数量动态计算X轴标签间隔
+        num_students = data_end_row - data_start_row + 1
+        tick_skip = max(1, num_students // 10)  # 大约保持显示10个标签
+
         # 课程目标达成度计算页的折线图
         chart_configs = [
             {'title': '目标1达成度', 'y_col': 23, 'avg_col': 26, 'exp_col': 29},
@@ -806,8 +904,8 @@ class AchievementProcessor:
             chart.x_axis.majorGridlines = ChartLines(spPr=gridline_props)
             chart.y_axis.majorGridlines = ChartLines(spPr=gridline_props)
 
-            chart.x_axis.tickLblSkip = 5
-            chart.x_axis.tickMarkSkip = 5
+            chart.x_axis.tickLblSkip = tick_skip
+            chart.x_axis.tickMarkSkip = tick_skip
 
             x_values = Reference(ws_calc, min_col=9, min_row=data_start_row, max_row=data_end_row)
 

@@ -16,7 +16,7 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "达成度报告生成器")
 MAIN_SCRIPT = os.path.join(BASE_DIR, "main.py")
 
 # 应用名称
-APP_NAME = "达成度报告生成器"
+APP_NAME = "达成度报告生成器v1.2"
 
 
 def build():
@@ -47,12 +47,14 @@ def build():
         # Windows 使用 onefile 模式生成单个 .exe
         cmd.append("--onefile")
 
-    # 排除不需要的包（Qt、matplotlib等大型库）
+    # 排除不需要的包（Qt、matplotlib、torch等大型库）
     excludes = [
         "PyQt5", "PyQt6", "PySide2", "PySide6",
         "matplotlib", "scipy", "IPython", "jupyter",
         "notebook", "nbformat", "nbconvert",
         "tornado", "zmq", "cryptography",
+        "torch", "torchvision", "torchaudio", "tensorflow",
+        "keras", "sklearn", "cv2", "transformers",
     ]
     for exc in excludes:
         cmd.extend(["--exclude-module", exc])
@@ -93,7 +95,13 @@ def build():
     print("-" * 60)
 
     # 执行打包
-    result = subprocess.run(cmd, cwd=BASE_DIR)
+    result = subprocess.run(cmd, cwd=BASE_DIR, capture_output=True, text=True)
+
+    # 输出日志
+    if result.stdout:
+        print(result.stdout)
+    if result.stderr:
+        print(result.stderr)
 
     if result.returncode == 0:
         print("-" * 60)
