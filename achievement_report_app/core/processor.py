@@ -120,10 +120,14 @@ class AchievementProcessor:
 
             # 1.2 如果未找到，尝试从工作表名称提取班级信息
             # 例如 "9007851-0001_音乐2212" -> "音乐2212"
+            # 排除明显不是班级名的关键词
+            exclude_keywords = ['达成度报告', '成绩单', '成绩', '总评', '期末', '平时', '报告', '统计']
             if not class_name:
                 sheet_match = re.search(r'_([^\d_][^_]+)$', sheet)
                 if sheet_match:
-                    class_name = sheet_match.group(1).strip()
+                    candidate = sheet_match.group(1).strip()
+                    if not any(kw in candidate for kw in exclude_keywords):
+                        class_name = candidate
 
             # 1.3 如果仍未找到，尝试从文件名提取班级信息
             # 例如 "2022级计算机1班成绩单.xlsx" -> "计算机1班"
@@ -131,6 +135,8 @@ class AchievementProcessor:
             if not class_name:
                 filename = os.path.basename(grades_file)
                 filename_no_ext = os.path.splitext(filename)[0]
+                # 排除明显不是班级名的关键词
+                exclude_keywords = ['达成度报告', '成绩单', '成绩', '总评', '期末', '平时', '报告']
                 # 尝试匹配常见班级格式（避免匹配日期如2023-2024）
                 file_patterns = [
                     r'(\d{2,4}级[^\d_]+\d*班)',  # 如 "2022级计算机1班"
@@ -141,13 +147,16 @@ class AchievementProcessor:
                 for pattern in file_patterns:
                     file_match = re.search(pattern, filename_no_ext)
                     if file_match:
-                        class_name = file_match.group(1).strip()
-                        break
+                        candidate = file_match.group(1).strip()
+                        # 检查是否包含排除关键词
+                        if not any(kw in candidate for kw in exclude_keywords):
+                            class_name = candidate
+                            break
 
             # 1.4 查找列头中的班级列（用于从每行数据提取）
             # 注意：这里不再记录全局 class_col_idx，而是在后面为每组数据找班级列
             header_class_cols = []  # 存储所有班级列的位置
-            for i in range(min(15, len(df))):
+            for i in range(min(50, len(df))):
                 row_values = [str(df.iloc[i, j]).strip() if pd.notna(df.iloc[i, j]) else ''
                               for j in range(len(df.columns))]
                 # 找到列头行
@@ -172,10 +181,10 @@ class AchievementProcessor:
                 'name': ['姓名'],
                 'final_score': ['期末成绩', '期末', '期末考试'],
                 'regular_score': ['平时成绩', '平时', '平时分'],
-                'total_score': ['总成绩', '总评成绩', '成绩', '总评']
+                'total_score': ['总成绩', '总评成绩', '总分', '成绩', '总评']
             }
 
-            for i in range(min(15, len(df))):
+            for i in range(min(50, len(df))):
                 row_values = [str(df.iloc[i, j]).strip() if pd.notna(df.iloc[i, j]) else ''
                               for j in range(len(df.columns))]
 
@@ -209,9 +218,10 @@ class AchievementProcessor:
                                 col_mapping['regular_score'] = j
 
                             if 'total_score' not in col_mapping:
-                                if '总成绩' in cell_value or '总评成绩' in cell_value:
+                                # 优先精确匹配，避免"成绩"匹配到"平时成绩"等
+                                if any(p in cell_value for p in ['总成绩', '总评成绩', '总分']):
                                     col_mapping['total_score'] = j
-                                elif cell_value == '成绩' or cell_value == '总评':
+                                elif cell_value in ['成绩', '总评']:
                                     col_mapping['total_score'] = j
 
                             # 为每组数据查找对应的班级列
@@ -220,8 +230,17 @@ class AchievementProcessor:
 
                         # 检查这组是否有完整的必需列
                         required_cols = ['student_id', 'name', 'final_score', 'regular_score', 'total_score']
-                        if all(col in col_mapping for col in required_cols):
+                        missing_cols = [col for col in required_cols if col not in col_mapping]
+                        if not missing_cols:
                             col_groups.append(col_mapping)
+                        elif sid_col == student_id_cols[0]:  # 只为第一组记录缺失信息
+                            col_name_map = {
+                                'student_id': '学号', 'name': '姓名',
+                                'final_score': '期末成绩', 'regular_score': '平时成绩',
+                                'total_score': '总成绩'
+                            }
+                            missing_names = [col_name_map[c] for c in missing_cols]
+                            warnings.append(f"工作表「{sheet}」: 缺少列「{'、'.join(missing_names)}」，已跳过")
 
                     break
 
@@ -230,7 +249,10 @@ class AchievementProcessor:
                 continue
 
             if not col_groups:
-                warnings.append(f"工作表「{sheet}」: 未找到完整的成绩列组合，已跳过")
+                # 如果前面没有添加具体的缺失列警告，则添加通用警告
+                has_missing_warning = any(f"工作表「{sheet}」: 缺少列" in w for w in warnings)
+                if not has_missing_warning:
+                    warnings.append(f"工作表「{sheet}」: 未找到完整的成绩列组合，已跳过")
                 continue
 
             # 如果有多组，统计数量（不再作为警告）
