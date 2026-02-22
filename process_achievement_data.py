@@ -311,20 +311,20 @@ def create_workbook(output_file, students):
 
         else:
             # 正常学生：写入所有数据和公式
-            # C列: 目标一 = ROUND(总成绩 * $C$1 / 100, 0)
-            ws_calc.cell(row, 3).value = f'=ROUND(H{row}*$C$1/100,0)'
+            # C列: 目标一 = ROUND(期末成绩 * $C$1 / 100, 0)
+            ws_calc.cell(row, 3).value = f'=ROUND(G{row}*$C$1/100,0)'
             ws_calc.cell(row, 3).font = black_font
             ws_calc.cell(row, 3).alignment = center_alignment
             ws_calc.cell(row, 3).border = thin_border
 
-            # D列: 目标二 = ROUND(总成绩 * $D$1 / 100, 0)
-            ws_calc.cell(row, 4).value = f'=ROUND(H{row}*$D$1/100,0)'
+            # D列: 目标二 = ROUND(期末成绩 * $D$1 / 100, 0)
+            ws_calc.cell(row, 4).value = f'=ROUND(G{row}*$D$1/100,0)'
             ws_calc.cell(row, 4).font = black_font
             ws_calc.cell(row, 4).alignment = center_alignment
             ws_calc.cell(row, 4).border = thin_border
 
-            # E列: 目标三 = ROUND(总成绩 * $E$1 / 100, 0)
-            ws_calc.cell(row, 5).value = f'=ROUND(H{row}*$E$1/100,0)'
+            # E列: 目标三 = ROUND(期末成绩 * $E$1 / 100, 0)
+            ws_calc.cell(row, 5).value = f'=ROUND(G{row}*$E$1/100,0)'
             ws_calc.cell(row, 5).font = black_font
             ws_calc.cell(row, 5).alignment = center_alignment
             ws_calc.cell(row, 5).border = thin_border
