@@ -305,7 +305,7 @@ class AchievementReportApp(ctk.CTk):
         # === 版权信息 ===
         ctk.CTkLabel(
             self.main_frame,
-            text="© 2026 集美大学 达成度报告生成器 v1.3 | 刘祉祁",
+            text="© 2026 集美大学 达成度报告生成器 v1.4 | 刘祉祁",
             font=ctk.CTkFont(size=11),
             text_color="#555555"
         ).pack(pady=(20, 5))

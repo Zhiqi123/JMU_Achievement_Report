@@ -16,7 +16,7 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "达成度报告生成器")
 MAIN_SCRIPT = os.path.join(BASE_DIR, "main.py")
 
 # 应用名称
-APP_NAME = "达成度报告生成器v1.3"
+APP_NAME = "达成度报告生成器v1.4"
 
 
 def build():
