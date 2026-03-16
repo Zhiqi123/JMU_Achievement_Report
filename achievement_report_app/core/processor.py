@@ -65,8 +65,8 @@ class AchievementProcessor:
 
         all_students = []
         warnings = []  # 收集警告信息
-        # 如果只有一个工作表，即使是Sheet1也要处理
-        sheets_to_process = xl.sheet_names if len(xl.sheet_names) == 1 else [s for s in xl.sheet_names if s != 'Sheet1']
+        # 处理所有工作表，让后面的验证逻辑决定是否跳过（基于是否包含有效数据）
+        sheets_to_process = xl.sheet_names
         total_sheets = len(sheets_to_process)
         processed_sheets = 0
 
@@ -196,28 +196,37 @@ class AchievementProcessor:
 
                     # 找到所有"学号"列的位置
                     student_id_cols = [j for j, v in enumerate(row_values) if '学号' in v]
-                    # 找到所有"班级"列的位置，用于确定每组的边界
-                    class_cols = [j for j, v in enumerate(row_values) if v.replace('\n', '').replace('\r', '') in ['班级', '行政班']]
+
+                    # 自适应边界检测：根据组宽度是否一致选择不同策略
+                    if len(student_id_cols) > 1:
+                        # 计算所有相邻学号列的间距
+                        gaps = [student_id_cols[j+1] - student_id_cols[j]
+                                for j in range(len(student_id_cols) - 1)]
+                        # 检查间距是否一致（允许±1的误差，兼容列宽微小差异）
+                        gaps_consistent = (max(gaps) - min(gaps) <= 1)
+                        group_width = gaps[0] if gaps_consistent else None
+                    else:
+                        gaps_consistent = True
+                        group_width = len(row_values)
 
                     for idx, sid_col in enumerate(student_id_cols):
                         col_mapping = {'student_id': sid_col}
 
                         # 确定当前组的搜索范围
-                        # 前边界：当前组对应的班级列，或上一组的后边界
-                        # 查找学号列之前最近的班级列
-                        group_start = 0
-                        for cc in class_cols:
-                            if cc < sid_col:
-                                group_start = cc
+                        if gaps_consistent and group_width:
+                            # 策略1：组宽度一致，使用固定宽度划分前边界
+                            group_start = idx * group_width
+                            # 后边界：使用下一个学号列位置（更安全，避免有额外空列时漏掉列）
+                            if idx < len(student_id_cols) - 1:
+                                group_end = student_id_cols[idx + 1]
                             else:
-                                break
-
-                        # 后边界：下一个班级列，或行尾
-                        group_end = len(row_values)
-                        for cc in class_cols:
-                            if cc > sid_col:
-                                group_end = cc
-                                break
+                                group_end = len(row_values)
+                        else:
+                            # 策略2：组宽度不一致，使用学号列位置划分
+                            # 前边界：前一个学号列之后（避免重叠）
+                            group_start = (student_id_cols[idx - 1] + sid_col) // 2 + 1 if idx > 0 else 0
+                            # 后边界：下一个学号列之前
+                            group_end = (sid_col + student_id_cols[idx + 1]) // 2 + 1 if idx < len(student_id_cols) - 1 else len(row_values)
 
                         # 在 [group_start, group_end) 范围内查找所有列
                         for j in range(group_start, group_end):
@@ -599,22 +608,25 @@ class AchievementProcessor:
                     ws_calc.cell(row, col).border = thin_border
             else:
                 # C列: 目标一
-                ws_calc.cell(row, 3).value = f'=ROUND(G{row}*$C$1/100,0)'
+                ws_calc.cell(row, 3).value = f'=ROUND(G{row}*$C$1/100,2)'
                 ws_calc.cell(row, 3).font = black_font
                 ws_calc.cell(row, 3).alignment = center_alignment
                 ws_calc.cell(row, 3).border = thin_border
+                ws_calc.cell(row, 3).number_format = '0.00'
 
                 # D列: 目标二
-                ws_calc.cell(row, 4).value = f'=ROUND(G{row}*$D$1/100,0)'
+                ws_calc.cell(row, 4).value = f'=ROUND(G{row}*$D$1/100,2)'
                 ws_calc.cell(row, 4).font = black_font
                 ws_calc.cell(row, 4).alignment = center_alignment
                 ws_calc.cell(row, 4).border = thin_border
+                ws_calc.cell(row, 4).number_format = '0.00'
 
                 # E列: 目标三
-                ws_calc.cell(row, 5).value = f'=ROUND(G{row}*$E$1/100,0)'
+                ws_calc.cell(row, 5).value = f'=ROUND(G{row}*$E$1/100,2)'
                 ws_calc.cell(row, 5).font = black_font
                 ws_calc.cell(row, 5).alignment = center_alignment
                 ws_calc.cell(row, 5).border = thin_border
+                ws_calc.cell(row, 5).number_format = '0.00'
 
                 # F列: 平时成绩
                 ws_calc.cell(row, 6).value = student['regular_score']
